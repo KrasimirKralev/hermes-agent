@@ -146,7 +146,7 @@ def use_keyless(name: str, api_key: str) -> bool:
 def _parse_mcp_body(body: str) -> str:
     """First text content item from an MCP tools/call response — plain-JSON bodies
     (Parallel) or SSE ``data: {...}`` lines (Exa). Raises :class:`KeylessMCPError` for
-    JSON-RPC errors and ``isError`` tool results (e.g. Exa's free-tier rate limit).
+    JSON-RPC errors and ``isError`` tool results; Exa's HTTP 200 throttle notice is caught by ``_exa_call``.
 
     SSE frames are split on the SSE line terminators (CRLF, CR, LF) only:
     ``str.splitlines()`` also breaks on U+0085 / U+2028 / U+2029, which legitimately
@@ -273,15 +273,28 @@ def _parse_exa_search_text(text: str, limit: int) -> list[dict[str, Any]]:
     return results
 
 
+# Exa's free tier also throttles with an HTTP 200 whose only text is this notice (no ``isError``).
+# Anchored at the start, so a fetched page that quotes the sentence is still content.
+_EXA_THROTTLE_RE = re.compile(r"\s*You['’]ve hit Exa's free MCP rate limit", re.IGNORECASE)
+
+
+def _exa_call(tool: str, args: dict[str, Any]) -> str:
+    """``mcp_call`` on Exa; its throttle notice raises as a rate limit, so the ring fails over."""
+    text = mcp_call(EXA_MCP_URL, tool, args)
+    if _EXA_THROTTLE_RE.match(text):
+        raise KeylessMCPError(f"rate limit: {text.strip()[:200]}")
+    return text
+
+
 def exa_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
-    return _search("exa", lambda: _parse_exa_search_text(mcp_call(EXA_MCP_URL, "web_search_exa", {"query": query, "numResults": max(1, int(limit))}), limit))
+    return _search("exa", lambda: _parse_exa_search_text(_exa_call("web_search_exa", {"query": query, "numResults": max(1, int(limit))}), limit))
 
 
 def exa_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     """Called per-URL; the tool returns one combined text payload."""
     def _fetch(url: str) -> dict[str, Any]:
         try:
-            text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
+            text = _exa_call("web_fetch_exa", {"urls": [url]})
         except KeylessMCPError as exc:
             # ``...: CRAWL_HTTP_429`` is the page's answer, not Exa throttling this client.
             if origin := origin_http_error(exa_crawl_status(exc)):

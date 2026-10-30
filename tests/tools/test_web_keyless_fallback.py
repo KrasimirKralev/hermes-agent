@@ -248,6 +248,32 @@ class TestKeylessCalls:
         assert out[0]["content"].startswith("# Page Title")
 
 
+    _EXA_THROTTLE_SSE = "data: " + json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"content": [{
+        "type": "text", "text": "You've hit Exa's free MCP rate limit. To continue using without "
+        "limits, create your own Exa API key."}]}})
+
+    def _exa_throttled(self, *_args):
+        return keyless_mcp._parse_mcp_body(self._EXA_THROTTLE_SSE)
+
+    def test_exa_search_throttle_notice_is_rate_limit(self):
+        with patch.object(keyless_mcp, "mcp_call", side_effect=self._exa_throttled):
+            out = keyless_mcp.exa_search_keyless("q")
+        assert out["success"] is False
+        assert keyless_mcp._is_search_failover_eligible(out["error"])
+
+    def test_exa_extract_throttle_notice_is_rate_limit(self):
+        with patch.object(keyless_mcp, "mcp_call", side_effect=self._exa_throttled):
+            out = keyless_mcp.exa_extract_keyless(["https://a"])
+        assert keyless_mcp._is_rate_limitish(out[0]["error"])
+        assert "free MCP rate limit" not in out[0].get("content", "")
+
+    def test_exa_extract_page_quoting_the_notice_is_content(self):
+        page = "# Exa limits\nYou've hit Exa's free MCP rate limit. is what users see."
+        with patch.object(keyless_mcp, "mcp_call", return_value=page):
+            out = keyless_mcp.exa_extract_keyless(["https://a"])
+        assert out[0]["content"] == page
+
+
 # ---------------------------------------------------------------------------
 # Provider routing: keyless vs keyed
 # ---------------------------------------------------------------------------
@@ -565,6 +591,16 @@ class TestKeylessFailover:
     def test_search_fails_over_on_rate_limit(self, monkeypatch):
         self._pin(monkeypatch, "exa")
         monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "exa", lambda q, l: self._throttled("Exa"))
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "parallel", lambda q, l: self._ok("parallel"))
+        out = keyless_mcp.search_with_failover("exa", "q", 3)
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "parallel"
+
+    def test_search_fails_over_on_exa_throttle_notice(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        monkeypatch.setattr(
+            keyless_mcp, "mcp_call",
+            lambda *_a: keyless_mcp._parse_mcp_body(TestKeylessCalls._EXA_THROTTLE_SSE))
         monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "parallel", lambda q, l: self._ok("parallel"))
         out = keyless_mcp.search_with_failover("exa", "q", 3)
         assert out["success"] is True
