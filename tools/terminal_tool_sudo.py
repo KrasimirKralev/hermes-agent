@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 
+from tools.approval_detection import _SHELL_COMMAND_TRANSITIONS
 from utils import env_var_enabled
 
 # Log-record parity with the origin module.
@@ -273,6 +274,10 @@ def _read_shell_token(command: str, start: int) -> tuple[str, int]:
     return command[start:end], end
 
 
+# The approval scanner's command-position keywords, plus an opening brace group.
+_SHELL_COMMAND_KEYWORDS = frozenset(_SHELL_COMMAND_TRANSITIONS | {"{"})
+
+
 def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, int, int, bool]]:
     """Quote-aware shell scanner shared by the sudo and compound-background rewriters.
 
@@ -315,7 +320,9 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
             kind, end, at_start = "op", i + 1, ch != ")"
         else:
             token, end = _read_shell_token(command, i)
-            kind, at_start = "word", bool(at_start and _looks_like_env_assignment(token))
+            # A reserved word in command position opens another one (`do sudo …`, `then sudo …`).
+            keyword = not background and token in _SHELL_COMMAND_KEYWORDS
+            kind, at_start = "word", bool(at_start and (keyword or _looks_like_env_assignment(token)))
         yield kind, i, end, was_start
         i = end
 

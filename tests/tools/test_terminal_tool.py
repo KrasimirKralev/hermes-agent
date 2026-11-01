@@ -122,3 +122,24 @@ def test_sudo_rewrite_preserves_env_operands_and_prose(monkeypatch):
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool_sudo._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool_sudo._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_sudo_after_shell_keywords_receives_password_stdin(monkeypatch):
+    """A sudo opened by a reserved word (loop/if bodies, brace groups) needs the same -S rewrite."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    cases = {
+        "for i in 1; do sudo id; done": ("for i in 1; do sudo -S -p '' id; done", 1),
+        "if true; then sudo id; else sudo id2; fi": (
+            "if true; then sudo -S -p '' id; else sudo -S -p '' id2; fi", 2),
+        "while false; do sudo id; done": ("while false; do sudo -S -p '' id; done", 1),
+        "! sudo id": ("! sudo -S -p '' id", 1),
+        "{ sudo id; }": ("{ sudo -S -p '' id; }", 1),
+    }
+    for command, (expected, count) in cases.items():
+        assert terminal_tool_sudo._transform_sudo_command(command) == (expected, "testpass\n" * count)
+
+
+def test_keyword_words_outside_command_position_stay_untouched(monkeypatch):
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    for command in ("echo then sudo id", "echo do sudo", "grep -e if -e sudo notes.txt"):
+        assert terminal_tool_sudo._transform_sudo_command(command) == (command, None)
