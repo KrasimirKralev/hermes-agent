@@ -6,6 +6,7 @@ TUI/gateway setting change (e.g. /personality, /reasoning, /details_mode).
 """
 
 import os
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -314,4 +315,14 @@ class TestAtomicRoundtripYamlSave:
 
         atomic_roundtrip_yaml_save(config_path, {"kanban": {"dispatch_profiles": [], "interval": 60}})
 
-        assert "dispatch_profiles: []  # who dispatches" in config_path.read_text(encoding="utf-8")
+        text = config_path.read_text(encoding="utf-8")
+        assert re.search(r"^  dispatch_profiles: \[\] +# who dispatches$", text, re.MULTILINE)
+
+    def test_single_key_removal_that_empties_a_commented_section_writes_valid_yaml(self, config_path):
+        config_path.write_text("kanban:  # board settings\n  interval: 60\nmodel: m\n", encoding="utf-8")
+
+        from utils import atomic_roundtrip_yaml_update
+
+        atomic_roundtrip_yaml_update(config_path, "kanban.interval", None)
+
+        assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == {"kanban": {}, "model": "m"}

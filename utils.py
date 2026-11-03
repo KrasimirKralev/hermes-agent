@@ -568,6 +568,7 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
     mkdir_under_hermes_home(path.parent)
     yaml_rt, config = _roundtrip_load(path)
     current = config
+    parent = parent_key = None
     keys = _split_key_path(key_path)
     i = 0
     while True:
@@ -576,6 +577,8 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
         if i + consumed == len(keys):
             if value is None:
                 current.pop(seg, None)
+                if parent is not None and not current and current.ca.comment:
+                    _put_empty_block(parent, parent_key, {})
             else:
                 current[seg] = value
             break
@@ -585,7 +588,7 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
                 return  # nothing to remove under a missing/scalar parent
             next_value = CommentedMap()
             current[seg] = next_value
-        current = next_value
+        parent, parent_key, current = current, seg, next_value
         i += consumed
     _roundtrip_dump(path, yaml_rt, config)
 
@@ -613,6 +616,20 @@ def _rt_value(value: Any) -> Any:
     if isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
         return DoubleQuotedScalarString(value)
     return value
+
+
+def _put_empty_block(dst: Any, key: Any, empty: Any) -> None:
+    """Store an empty list/mapping at ``dst[key]`` without making the file unparseable (#148524).
+
+    ruamel keeps a block's ``key:  # note`` and leading comment lines on the child node; emptied in
+    place, that node is dumped as a flow ``[]``/``{}`` on its own line after them, which is not YAML.
+    A fresh node is dumped after the key, and the key-line note moves to the end of that line.
+    """
+    comment = dst[key].ca.comment
+    note = comment[0].value.split("\n", 1)[0].strip() if comment and comment[0] else ""
+    dst[key] = _rt_value(empty)
+    if note:
+        dst.yaml_add_eol_comment(note, key)
 
 
 def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
@@ -657,14 +674,7 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
         current = dst[key]
         if (isinstance(value, (dict, list)) and not value
                 and isinstance(current, (CommentedMap, CommentedSeq)) and current and current.ca.comment):
-            # ruamel keeps a block's ``key:  # note`` and leading comment lines on the child node;
-            # emptied in place, that node is dumped as a flow ``[]``/``{}`` on its own line after
-            # them, which is not YAML (#148524). A fresh node keeps the key-line note as an
-            # end-of-line comment; the leading lines described the entries that are now gone.
-            note = current.ca.comment[0].value.split("\n", 1)[0].strip() if current.ca.comment[0] else ""
-            dst[key] = _rt_value(value)
-            if note:
-                dst.yaml_add_eol_comment(note, key)
+            _put_empty_block(dst, key, value)
         elif isinstance(value, dict) and isinstance(current, CommentedMap):
             _merge(current, value)
         elif isinstance(value, list) and isinstance(current, CommentedSeq):
