@@ -655,7 +655,17 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
 
     def _merge_item(dst, key, value) -> None:
         current = dst[key]
-        if isinstance(value, dict) and isinstance(current, CommentedMap):
+        if (isinstance(value, (dict, list)) and not value
+                and isinstance(current, (CommentedMap, CommentedSeq)) and current and current.ca.comment):
+            # ruamel keeps a block's ``key:  # note`` and leading comment lines on the child node;
+            # emptied in place, that node is dumped as a flow ``[]``/``{}`` on its own line after
+            # them, which is not YAML (#148524). A fresh node keeps the key-line note as an
+            # end-of-line comment; the leading lines described the entries that are now gone.
+            note = current.ca.comment[0].value.split("\n", 1)[0].strip() if current.ca.comment[0] else ""
+            dst[key] = _rt_value(value)
+            if note:
+                dst.yaml_add_eol_comment(note, key)
+        elif isinstance(value, dict) and isinstance(current, CommentedMap):
             _merge(current, value)
         elif isinstance(value, list) and isinstance(current, CommentedSeq):
             _merge_seq(current, value)

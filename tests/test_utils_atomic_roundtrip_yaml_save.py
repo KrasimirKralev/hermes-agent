@@ -288,3 +288,30 @@ class TestAtomicRoundtripYamlSave:
         atomic_roundtrip_yaml_save(config_path, {"model": {"default": "updated-model"}})
 
         assert chown_calls == [(config_path, 345, 678)]
+
+    @pytest.mark.parametrize("original, emptied", [
+        ("kanban:\n  dispatch_profiles:     # who dispatches\n    - mordecai\n  interval: 60\n",
+         {"kanban": {"dispatch_profiles": [], "interval": 60}}),
+        ("kanban:  # board settings\n  interval: 60\nmodel: m\n", {"kanban": {}, "model": "m"}),
+        ("toolsets:\n  # enabled toolsets\n  - web\nmodel: m\n", {"toolsets": [], "model": "m"}),
+    ], ids=["key-line-comment-list", "key-line-comment-map", "leading-comment-list"])
+    def test_emptying_a_commented_block_writes_valid_yaml(self, config_path, original, emptied):
+        """#148524: emptying a list or mapping whose key carries a comment wrote an unparseable file."""
+        config_path.write_text(original, encoding="utf-8")
+
+        from utils import atomic_roundtrip_yaml_save
+
+        atomic_roundtrip_yaml_save(config_path, emptied)
+
+        assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == emptied
+
+    def test_emptying_a_block_keeps_its_key_line_comment(self, config_path):
+        config_path.write_text(
+            "kanban:\n  dispatch_profiles:     # who dispatches\n    - mordecai\n  interval: 60\n",
+            encoding="utf-8")
+
+        from utils import atomic_roundtrip_yaml_save
+
+        atomic_roundtrip_yaml_save(config_path, {"kanban": {"dispatch_profiles": [], "interval": 60}})
+
+        assert "dispatch_profiles: []  # who dispatches" in config_path.read_text(encoding="utf-8")
