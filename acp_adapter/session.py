@@ -258,7 +258,9 @@ class SessionManager:
             return None
         state.cwd = cwd
         _register_task_cwd(session_id, cwd)
-        self._persist(state)
+        # A cwd change adds no messages; re-syncing a restored snapshot would delete
+        # rows another process appended since it was read (#149013).
+        self._persist(state, sync_messages=False)
         # Promote the authoritative column and claim an ordering generation, the
         # same contract tui_gateway/session_workdir.py uses: a git probe may only
         # publish while its generation is still current, so a slow probe for a
@@ -340,8 +342,9 @@ class SessionManager:
                 logger.debug("ACP session cwd backfill failed", exc_info=True)
         return self._db_instance
 
-    def _persist(self, state: SessionState) -> None:
-        """Create/update the session record, then sync the live message set."""
+    def _persist(self, state: SessionState, *, sync_messages: bool = True) -> None:
+        """Create/update the session record, then sync the live message set (always for a
+        newly created row; for an existing row only when ``sync_messages``)."""
         db = self._get_db()
         if db is None:
             return
@@ -361,6 +364,7 @@ class SessionManager:
                     return
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
                                   model_config=session_meta, cwd=state.cwd or None)
+                sync_messages = True
             else:
                 try:
                     db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)
@@ -389,6 +393,8 @@ class SessionManager:
             # a mid-rewrite failure so the previously persisted conversation survives (salvaged from
             # #13675).
             agent = state.agent
+            if not sync_messages:
+                return
             if getattr(agent, "_session_db", None) is db and getattr(agent, "_session_db_created", False):
                 return
             # A non-owning agent (model switch, /restore: fresh agent, _session_db_created=False)
