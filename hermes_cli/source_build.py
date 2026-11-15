@@ -177,6 +177,10 @@ def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None
 
 def build_source_webapp(project_root: Path, *, env: dict, explicit: bool = False) -> None:
     """Browser renderer; its dependencies live in a private workspace, never the checkout's."""
+    # Same Vite/Rolldown bundler as the dashboard: bound it the same way (#63338, #156161).
+    from hermes_cli.web_build_limits import apply_web_build_limits
+
+    apply_web_build_limits(env)
     run_source_script(project_root, "apps/desktop/scripts/build-webapp.mjs", *_install_args(explicit),
                       env=env, label="Building the Webapp renderer")
 

@@ -95,7 +95,14 @@ class TestWebBuildLimits:
 class TestBuildSourceWebPropagatesLimits:
     """The install/update/``hermes dashboard`` build path must apply the caps."""
 
-    def test_build_source_web_applies_limits(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("builder", "label"),
+        [
+            ("build_source_web", "Building the web UI"),
+            ("build_source_webapp", "Building the Webapp renderer"),
+        ],
+    )
+    def test_source_frontend_builds_apply_limits(self, tmp_path, monkeypatch, builder, label):
         from hermes_cli import source_build
 
         captured: dict = {}
@@ -109,12 +116,13 @@ class TestBuildSourceWebPropagatesLimits:
         monkeypatch.delenv("RAYON_NUM_THREADS", raising=False)
 
         env = {"PATH": "/bin"}
-        source_build.build_source_web(tmp_path, env=env)
+        monkeypatch.setattr(source_build, "_install_args", lambda explicit: ())
+        getattr(source_build, builder)(tmp_path, env=env)
         assert "--max-old-space-size=" in captured["env"]["NODE_OPTIONS"]
         assert captured["env"]["RAYON_NUM_THREADS"].isdigit()
         # original env keys untouched
         assert captured["env"]["PATH"] == "/bin"
-        assert captured["label"] == "Building the web UI"
+        assert captured["label"] == label
 
 
 class TestPackageJsonBuildScriptCapped:
