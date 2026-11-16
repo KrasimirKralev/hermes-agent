@@ -47,6 +47,8 @@ logger = logging.getLogger("hermes_cli.plugins")
 _HOST_MODULE = "hermes_cli.plugin_host_child"
 _START_TIMEOUT_SECS = 30.0
 _SHUTDOWN_GRACE_SECS = 3.0
+# Replies carry whole HTTP bodies (base64 in one JSON line): read them a pipe-full at a time.
+_READ_BUFFER_BYTES = 1 << 20
 # A host that dies is restarted (its plugins reloaded) at most this many times per window; a plugin
 # that kills the host while loading is not reloaded, so one bad plugin cannot crash-loop the rest.
 _RESTART_BUDGET = 3
@@ -68,6 +70,36 @@ def _hosted_ambient_credentials(home: Path) -> dict[str, str]:
         return {name: value for name in sorted(names) if (value := get_secret(name))}
     finally:
         reset_secret_scope(token)
+
+
+class _PipeLineReader:
+    """Line reader over the host's raw stdout pipe, reading it in chunks.
+
+    Not ``io.BufferedReader``: its ``close()`` waits for the lock a reader blocked in
+    ``readline()`` holds, so shutting down a stopped host would hang instead of killing it.
+    """
+
+    def __init__(self, raw: Any) -> None:
+        self._raw, self._buffer = raw, bytearray()
+
+    def readline(self) -> bytes:
+        scanned = 0
+        while True:
+            end = self._buffer.find(b"\n", scanned)
+            if end >= 0:
+                line = bytes(self._buffer[:end + 1])
+                del self._buffer[:end + 1]
+                return line
+            scanned = len(self._buffer)
+            chunk = self._raw.read(_READ_BUFFER_BYTES)
+            if not chunk:
+                line = bytes(self._buffer)
+                self._buffer.clear()
+                return line
+            self._buffer += chunk
+
+    def close(self) -> None:
+        self._raw.close()
 
 
 class PluginHost:
@@ -152,7 +184,9 @@ class PluginHost:
             threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,
                              name=f"plugin-host-{proc.pid}-stderr").start()
             self._generation += 1
-            channel = Channel(proc.stdout, proc.stdin, self._handle,  # type: ignore[arg-type]
+            # A raw pipe's readline() costs one read(2) per byte, so large replies stalled every
+            # hosted call behind the reader (#156448).
+            channel = Channel(_PipeLineReader(proc.stdout), proc.stdin, self._handle,  # type: ignore[arg-type]
                               name=f"plugin-host[{proc.pid}]",
                               on_close=functools.partial(self._on_channel_close, self._generation),
                               context_for_origin=self._context_for_origin).start()
